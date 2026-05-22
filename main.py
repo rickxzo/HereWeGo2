@@ -1,6 +1,7 @@
 from fastapi import FastAPI, Depends, HTTPException, Request, UploadFile, File, logger
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from fastapi.middleware.cors import CORSMiddleware
 
 from jose import jwt
 import psycopg2
@@ -97,6 +98,19 @@ def send_mail(update_id, update, project_name):
 
 
 app = FastAPI()
+
+origins = [
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
+]
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=origins,      # Allowed frontend origins
+    allow_credentials=True,     # Cookies/auth headers
+    allow_methods=["*"],        # GET, POST, PUT, DELETE, etc.
+    allow_headers=["*"],        # Allow all headers
+)
 
 @app.get("/signup")
 def signup(
