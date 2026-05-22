@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Depends, HTTPException, Request, UploadFile, File
+from fastapi import FastAPI, Depends, HTTPException, Request, UploadFile, File, logger
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 
@@ -7,6 +7,9 @@ import psycopg2
 import os
 from dotenv import load_dotenv
 load_dotenv()
+
+import resend
+resend.api_key = os.getenv('RESEND_API_KEY')
 
 
 from werkzeug.security import generate_password_hash, check_password_hash
@@ -42,12 +45,55 @@ def connect_db():
         sslmode="require",
     )
 
-conn = connect_db()
-cur = conn.cursor()
-cur.execute("SELECT * FROM Users")
-res = cur.fetchall()
-print(res)
-conn.close()
+
+def send_mail(update_id, update, project_name):
+    try:
+        conn = connect_db()
+        cur = conn.cursor()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail="Database connection error in Send Mail")
+    try:
+        cur.execute("SELECT S.email FROM Stakeholders S JOIN Updates U ON S.project_id = U.project_id WHERE U.id = %s", (update_id,))
+        mails = cur.fetchall()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e)) 
+    
+
+    contents = []
+    for i in mails:
+        contents.append(
+            {
+                "from": "Acme <onboarding@resend.dev>",
+                "to": [i[0]],
+                "subject": f"SummedUp - New update on Project {project_name}",
+                "html": f"""
+                <h1>{update['title']}</h1>
+
+                <p>{update['description']}</p>
+
+                <a 
+                    href="https://summedup.onrender.com/respond?update_id={update_id}&email={i[0]}"
+                    style="
+                        display:inline-block;
+                        padding:10px 20px;
+                        background:#2563eb;
+                        color:white;
+                        text-decoration:none;
+                        border-radius:8px;
+                    "
+                >
+                    Send Your Opinion on the Update
+                </a>
+            """
+            }
+        )
+    print(contents)
+    try:
+        params: resend.Emails.SendParams = contents
+        resend.Batch.send(params)
+        return 1
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 app = FastAPI()
@@ -179,7 +225,7 @@ def get_project_updates(project_id: str, current_user: str = Depends(get_current
     finally:
         conn.close()
 
-@app.get("/update-statements")
+@app.get("/api/update-statements")
 def get_update_statements(update_id: str, current_user: str = Depends(get_current_user)):
     try:
         conn = connect_db()
@@ -241,7 +287,7 @@ def add_stakeholder(
     finally:
         conn.close()
 
-@app.get("/publish-update")
+@app.get("/api/publish-update")
 def publish_update(
     project_id: str,
     title: str,
@@ -256,16 +302,19 @@ def publish_update(
 
     try:
         cur.execute(
-            "INSERT INTO Updates (project_id, title, description) VALUES (%s, %s, %s)",
+            "INSERT INTO Updates (project_id, title, description) VALUES (%s, %s, %s) RETURNING id",
             (project_id, title, description)
         )
+        update_id = cur.fetchone()[0]
         conn.commit()
-        return {"message": "Update published successfully"}
+        return {"message": "Update published successfully", "update_id": update_id}
     except Exception as e:
         conn.rollback()
         raise HTTPException(status_code=500, detail="Error occurred while publishing update")
     finally:
         conn.close()
+        send_mail(update_id, {"title": title, "description": description}, project_id)
+
 
 
 @app.get("/upload-statement")
@@ -292,3 +341,33 @@ def upload_statement(
         raise HTTPException(status_code=500, detail=str(e))
     finally:
         conn.close()
+
+
+@app.get("/analysis-report")
+def analysis_report(update_id: str, current_user: str = Depends(get_current_user)):
+    try:
+        conn = connect_db()
+        cur = conn.cursor()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail="Database connection error in Analysis Report")
+
+    try:
+        cur.execute("SELECT message FROM Statements WHERE update_id = %s", (update_id,))
+        statements = cur.fetchall()
+        report = {
+            "total_statements": len(statements),
+            "positive_feedback": 67,
+            "negative_feedback": 33,
+            "overview": "Amay proshno kore neel dhrubotara",
+            "key_insights": [
+                "Stakeholders are generally positive about the project",
+                "Some concerns about timeline and budget",
+                "Overall sentiment is optimistic"
+            ],
+            "recommendations": [
+                "Abhilasha"
+            ]
+        }
+        return report
+    except Exception as e:
+        raise HTTPException(status_code=500, detail="Error occurred while generating analysis report")
